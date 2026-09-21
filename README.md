@@ -1,23 +1,24 @@
 # terraform-provider-tmds
 
-A Terraform / OpenTofu provider for **Trend Micro Deep Security (TMDS)** — manage
-Deep Security policies declaratively against the DSM REST API.
+A Terraform / OpenTofu provider for **Trend Micro Deep Security (TMDS)**. It manages
+Deep Security policy declaratively against the Deep Security Manager (DSM) REST API.
 
-> **Status: validated against a live DSM, preparing v0.1.0.** The `tmds_policy`
-> resource and `tmds_policy` data source are implemented and verified end-to-end
-> (create/read/update/delete/import, drift-free). Rule assignment lands in a
-> later release. This repo lives **outside** the `infra` monorepo; infra consumes
-> it from the registry once published.
+## Why a provider
 
-## Why a provider (vs. a script)
+Deep Security has no native cross-manager synchronization: each manager is
+independent and assigns its own numeric IDs to policies and rules. Managing policy
+with a plain script is awkward — no plan/diff, no state, and no portable way to
+reference an object by name across managers. This provider gives declarative
+management (plan / apply / drift detection) and keeps per-manager state that resolves
+object **names to that manager's local IDs**.
 
-Each AWS account runs its own independent DSM, and Deep Security 20 has no native
-cross-manager sync. A provider makes policy **declarative** (plan/state/drift),
-and per-manager state resolves rule **names → that manager's local IDs** — the
-hard part of doing this with a plain script. Modeled on the open-source
-[`terraform-provider-pritunl`](https://github.com/govini-ai/terraform-provider-pritunl).
+## Requirements
 
-## Usage
+- Terraform >= 1.0 or OpenTofu >= 1.6
+- Deep Security Manager 20 with REST API access and an API key
+- Go >= 1.23 (only to build from source)
+
+## Using the provider
 
 ```hcl
 terraform {
@@ -29,79 +30,85 @@ terraform {
   }
 }
 
-# Endpoint + key from TMDS_ENDPOINT / TMDS_API_KEY (pull the key from Secrets Manager).
 provider "tmds" {
-  insecure = true # DSM presents a self-signed cert
+  endpoint = "https://dsm.example.com" # or TMDS_ENDPOINT
+  # api_key sourced from TMDS_API_KEY (mark sensitive; do not hardcode)
+  insecure = true # DSM commonly presents a self-signed certificate
 }
+```
 
+### Provider configuration
+
+| Argument   | Env var         | Description                                   |
+| ---------- | --------------- | --------------------------------------------- |
+| `endpoint` | `TMDS_ENDPOINT` | DSM REST API base URL                         |
+| `api_key`  | `TMDS_API_KEY`  | DSM API secret key (sensitive)                |
+| `insecure` | —               | Skip TLS verification (for self-signed certs) |
+
+### Example
+
+```hcl
 data "tmds_policy" "base" {
   name = "Base Policy"
 }
 
-resource "tmds_policy" "il5_baseline" {
-  name                       = "FedRAMP-IL5 Baseline"
+resource "tmds_policy" "baseline" {
+  name                       = "Example Baseline"
   parent_id                  = tonumber(data.tmds_policy.base.id)
   anti_malware_state         = "on"
-  intrusion_prevention_state = "detect" # detect-first; flip to "prevent" after canary
+  intrusion_prevention_state = "detect" # detect-first; "prevent" to enforce
   network_engine_mode        = "Inline"
 }
 ```
 
 Module states are per-module: Intrusion Prevention accepts
-`prevent/detect/off/inherited`, Integrity Monitoring accepts
-`real-time/on/off/inherited`, the rest `on/off/inherited`. See `docs/`.
+`prevent`/`detect`/`off`/`inherited`, Integrity Monitoring accepts
+`real-time`/`on`/`off`/`inherited`, and the rest accept `on`/`off`/`inherited`.
+See the full reference under [`docs/`](docs/).
 
-## Layout
+## Developing
 
-```
-.
-├── main.go                              # provider entrypoint
-├── internal/provider/
-│   ├── provider.go                      # provider schema + configuration
-│   ├── client.go                        # DSM REST client
-│   ├── policy_resource.go               # tmds_policy resource (CRUD + import)
-│   ├── policy_data_source.go            # tmds_policy data source (name→ID)
-│   └── validators.go                    # per-module state enums
-├── docs/                                # generated provider docs (tfplugindocs)
-├── examples/                            # example HCL
-├── .goreleaser.yml                      # release build/sign config
-├── .github/workflows/release.yml        # publishes a signed GitHub Release on tag
-└── terraform-registry-manifest.json     # registry protocol manifest
-```
-
-## Local development (no GitHub / registry needed)
+Build and test with the standard Go toolchain:
 
 ```bash
-mise run build          # go build
-mise run test           # unit tests
-mise run install-local  # build + install for dev_overrides
+go build ./...
+go test ./...
+go install .   # installs the provider to $GOPATH/bin
 ```
 
-Point Terraform/OpenTofu at the local build via `~/.terraformrc` (or `~/.tofurc`):
+To exercise the provider against a DSM before it is published, install the local
+build and point Terraform/OpenTofu at it with a development override in
+`~/.terraformrc` (or `~/.tofurc`):
 
 ```hcl
 provider_installation {
   dev_overrides {
-    "govini-ai/tmds" = "/Users/<you>/.terraform.d/plugins/registry.terraform.io/govini-ai/tmds/0.0.1/<os>_<arch>"
+    "govini-ai/tmds" = "<directory containing the built provider binary>"
   }
   direct {}
 }
 ```
 
-Then in a scratch dir set `TMDS_ENDPOINT` / `TMDS_API_KEY` and run `tofu plan`
-against a **test/canary DSM** (never prod first). Skip `init` while dev_overrides
-is active.
+Then set `TMDS_ENDPOINT` / `TMDS_API_KEY` and run `terraform plan` (skip `init`
+while a dev override is active). Always test against a non-production manager first.
 
-## Scope
+## Documentation
 
-- `tmds_policy` — the rulebook: module states + `network_engine_mode`. **Implemented.**
-- `data "tmds_policy"` — name→ID lookup. **Implemented.**
-- Rule assignment (`tmds_policy_*_rules`), rule lookup data sources, and
-  `tmds_event_based_task` — planned for a later release.
+Provider documentation lives in [`docs/`](docs/) and is generated from the schema
+and examples with [`tfplugindocs`](https://github.com/hashicorp/terraform-plugin-docs):
+
+```bash
+tfplugindocs generate --provider-name tmds
+```
 
 ## Releasing
 
-Docs are generated with `tfplugindocs generate`. A tagged push (`vX.Y.Z`) runs
-GoReleaser via GitHub Actions to build and GPG-sign a release; the Terraform and
-OpenTofu registries index it. Requires `GPG_PRIVATE_KEY` / `GPG_FINGERPRINT`
-repository secrets and the public key registered with the registry.
+Pushing a version tag (`vX.Y.Z`) triggers a GitHub Actions workflow that builds all
+target platforms and produces a GPG-signed release with
+[GoReleaser](https://goreleaser.com); the Terraform and OpenTofu registries index it.
+Requires `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` repository secrets and the
+corresponding public key registered with the registry.
+
+## License
+
+Mozilla Public License 2.0. See [`LICENSE`](LICENSE).
