@@ -1,0 +1,25 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[tools]
+go = "1.23"
+goreleaser = "2"
+
+[tasks.tidy]
+description = "Resolve and lock Go module dependencies"
+run = "go mod tidy"
+
+[tasks.build]
+description = "Build the provider binary"
+run = "go build -o terraform-provider-tmds ."
+
+[tasks.test]
+description = "Run unit tests"
+run = "go test ./..."
+
+[tasks.install-local]
+description = "Build + install into the local TF plugin dir for dev_overrides"
+run = """
+go build -o terraform-provider-tmds .
+mkdir -p ~/.terraform.d/plugins/registry.terraform.io/govini-ai/tmds/0.0.1/{{os()}}_{{arch()}}
+cp terraform-provider-tmds ~/.terraform.d/plugins/registry.terraform.io/govini-ai/tmds/0.0.1/{{os()}}_{{arch()}}/
+"""

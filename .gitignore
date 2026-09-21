@@ -1,0 +1,15 @@
+# Built binary
+terraform-provider-tmds
+dist/
+
+# Terraform
+.terraform*
+*.tfstate
+*.tfstate.*
+crash.log
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
